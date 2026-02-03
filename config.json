@@ -1,8 +1,0 @@
-{
-  "resize": [2000, 2000],
-  "enhance": {
-    "contrast": 1.12,
-    "sharpness": 1.35,
-    "brightness": 1.04
-  }
-}
