@@ -3,13 +3,25 @@ from PIL import Image, ImageEnhance
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QLabel, QLineEdit, QMessageBox,
-    QGraphicsView, QGraphicsScene
+    QGraphicsView, QGraphicsScene, QGraphicsRectItem
 )
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QPen, QColor
 from PySide6.QtCore import QRectF, Qt
 
 
-class ZoomView(QGraphicsView):
+# ================= Graphics View с рисованием зон =================
+
+class CropView(QGraphicsView):
+    def __init__(self, scene, app):
+        super().__init__(scene)
+        self.app = app
+        self.drawing = False
+        self.start_pos = None
+        self.temp_rect = None
+
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
             factor = 1.15 if event.angleDelta().y() > 0 else 0.87
@@ -17,6 +29,44 @@ class ZoomView(QGraphicsView):
         else:
             super().wheelEvent(event)
 
+    def mousePressEvent(self, event):
+        if self.app.draw_mode and event.button() == Qt.LeftButton:
+            self.drawing = True
+            self.start_pos = self.mapToScene(event.pos())
+            self.temp_rect = QGraphicsRectItem(QRectF(self.start_pos, self.start_pos))
+            self.temp_rect.setPen(QPen(QColor(0, 180, 255), 2))
+            self.scene().addItem(self.temp_rect)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.drawing and self.temp_rect:
+            current_pos = self.mapToScene(event.pos())
+            rect = QRectF(self.start_pos, current_pos).normalized()
+            self.temp_rect.setRect(rect)
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.drawing and self.temp_rect:
+            rect = self.temp_rect.rect()
+            self.scene().removeItem(self.temp_rect)
+
+            if rect.width() > 10 and rect.height() > 10:
+                final_rect = QGraphicsRectItem(rect)
+                final_rect.setPen(QPen(QColor(255, 180, 0), 2))
+                final_rect.setFlag(QGraphicsRectItem.ItemIsMovable, True)
+                final_rect.setFlag(QGraphicsRectItem.ItemIsSelectable, True)
+                self.scene().addItem(final_rect)
+                self.app.rects.append(final_rect)
+
+            self.temp_rect = None
+            self.drawing = False
+        else:
+            super().mouseReleaseEvent(event)
+
+
+# ================= Главное приложение =================
 
 class App(QMainWindow):
     def __init__(self):
@@ -28,13 +78,14 @@ class App(QMainWindow):
         self.index = 0
         self.rects = []
         self.current_image = None
+        self.draw_mode = False
 
         self.scene = QGraphicsScene()
-        self.view = ZoomView(self.scene)
+        self.view = CropView(self.scene, self)
 
-        self._ui()
+        self._build_ui()
 
-    def _ui(self):
+    def _build_ui(self):
         root = QWidget()
         layout = QVBoxLayout(root)
 
@@ -43,18 +94,20 @@ class App(QMainWindow):
         btn_open = QPushButton("📂 Открыть папку")
         btn_prev = QPushButton("⬅")
         btn_next = QPushButton("➡")
-        btn_add = QPushButton("+ Зона")
-        btn_del = QPushButton("🗑 Удалить")
+        btn_draw = QPushButton("+ Зона (рисовать)")
+        btn_del = QPushButton("🗑 Удалить зону")
         btn_process = QPushButton("▶ Обработать лист")
 
         self.w_edit = QLineEdit("1200")
         self.h_edit = QLineEdit("1700")
         self.info = QLabel("0 / 0")
 
-        for w in [btn_open, btn_prev, btn_next, btn_add, btn_del,
-                  QLabel("W:"), self.w_edit,
-                  QLabel("H:"), self.h_edit,
-                  btn_process, self.info]:
+        for w in [
+            btn_open, btn_prev, btn_next, btn_draw, btn_del,
+            QLabel("W:"), self.w_edit,
+            QLabel("H:"), self.h_edit,
+            btn_process, self.info
+        ]:
             top.addWidget(w)
 
         layout.addLayout(top)
@@ -64,7 +117,7 @@ class App(QMainWindow):
         btn_open.clicked.connect(self.open_folder)
         btn_prev.clicked.connect(self.prev_image)
         btn_next.clicked.connect(self.next_image)
-        btn_add.clicked.connect(self.add_rect)
+        btn_draw.clicked.connect(self.toggle_draw_mode)
         btn_del.clicked.connect(self.delete_rect)
         btn_process.clicked.connect(self.process_current)
 
@@ -81,11 +134,11 @@ class App(QMainWindow):
                 color:white;
                 padding:4px;
                 border-radius:4px;
-                width:60px;
+                width:70px;
             }
         """)
 
-    # ---------- Работа с изображениями ----------
+    # ================= Работа с изображениями =================
 
     def open_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Папка с листами")
@@ -95,10 +148,11 @@ class App(QMainWindow):
         self.images = [
             os.path.join(folder, f)
             for f in os.listdir(folder)
-            if f.lower().endswith((".jpg", ".png", ".jpeg"))
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
         ]
+
         if not self.images:
-            QMessageBox.warning(self, "Ошибка", "Нет изображений")
+            QMessageBox.warning(self, "Ошибка", "В папке нет изображений")
             return
 
         self.index = 0
@@ -114,7 +168,8 @@ class App(QMainWindow):
         pix = QPixmap(path)
         self.scene.addPixmap(pix)
 
-        self.info.setText(f"{self.index+1} / {len(self.images)}")
+        self.view.fitInView(self.scene.itemsBoundingRect(), Qt.KeepAspectRatio)
+        self.info.setText(f"{self.index + 1} / {len(self.images)}")
 
     def next_image(self):
         if self.index < len(self.images) - 1:
@@ -126,13 +181,10 @@ class App(QMainWindow):
             self.index -= 1
             self.load_image()
 
-    # ---------- Зоны ----------
+    # ================= Зоны =================
 
-    def add_rect(self):
-        r = self.scene.addRect(QRectF(50, 50, 300, 400))
-        r.setFlag(r.ItemIsMovable, True)
-        r.setFlag(r.ItemIsSelectable, True)
-        self.rects.append(r)
+    def toggle_draw_mode(self):
+        self.draw_mode = not self.draw_mode
 
     def delete_rect(self):
         for r in self.rects[:]:
@@ -140,7 +192,7 @@ class App(QMainWindow):
                 self.scene.removeItem(r)
                 self.rects.remove(r)
 
-    # ---------- Обработка ----------
+    # ================= Обработка =================
 
     def process_current(self):
         if not self.rects:
@@ -160,14 +212,21 @@ class App(QMainWindow):
 
         for i, r in enumerate(self.rects, 1):
             b = r.sceneBoundingRect()
-            crop = self.current_image.crop(
-                (int(b.left()), int(b.top()), int(b.right()), int(b.bottom()))
-            )
 
+            crop = self.current_image.crop((
+                int(b.left()),
+                int(b.top()),
+                int(b.right()),
+                int(b.bottom())
+            ))
+
+            # 🔥 качественный ресайз
             crop = crop.resize((tw, th), Image.LANCZOS)
-            crop = ImageEnhance.Contrast(crop).enhance(1.08)
-            crop = ImageEnhance.Brightness(crop).enhance(1.02)
-            crop = ImageEnhance.Sharpness(crop).enhance(1.25)
+
+            # 🔥 ЗАМЕТНОЕ улучшение
+            crop = ImageEnhance.Contrast(crop).enhance(1.18)
+            crop = ImageEnhance.Brightness(crop).enhance(1.04)
+            crop = ImageEnhance.Sharpness(crop).enhance(1.6)
 
             crop.save(
                 os.path.join(out_dir, f"{i}.jpg"),
@@ -175,13 +234,19 @@ class App(QMainWindow):
                 subsampling=0
             )
 
-        QMessageBox.information(self, "Готово", out_dir)
+        QMessageBox.information(
+            self,
+            "Готово",
+            f"Сохранено в папку:\n{out_dir}"
+        )
 
+
+# ================= Запуск =================
 
 def main():
     app = QApplication(sys.argv)
-    w = App()
-    w.show()
+    win = App()
+    win.show()
     sys.exit(app.exec())
 
 
