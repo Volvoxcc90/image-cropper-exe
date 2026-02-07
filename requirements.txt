@@ -1,4 +1,4 @@
-pyside6
-pillow
+PySide6
+Pillow
+opencv-python
 numpy
-pyinstaller
