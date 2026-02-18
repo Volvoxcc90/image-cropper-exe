@@ -26,7 +26,7 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build EXE
+      - name: Build EXE (no icon)
         run: >
           pyinstaller
           --onefile
